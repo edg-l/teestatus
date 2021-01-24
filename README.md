@@ -2,6 +2,7 @@
 [![Crates.io](https://meritbadge.herokuapp.com/teestatus)](https://crates.io/crates/teestatus)
 ![Rust](https://github.com/edg-l/teestatus/workflows/Rust/badge.svg)
 [![Docs](https://docs.rs/teestatus/badge.svg)](https://docs.rs/teestatus)
+
 Request info about teeworlds servers.
 
 Example
