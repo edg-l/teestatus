@@ -1,6 +1,8 @@
 [package]
 name = "teestatus"
-version = "0.1.0"
+version = "0.1.1"
+documentation = "https://docs.rs/teestatus"
+readme = "README.md"
 description = "Library to retrieve information from teeworlds servers and related mods."
 authors = ["Edgar <git@edgarluque.com>"]
 edition = "2018"
