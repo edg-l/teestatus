@@ -1,0 +1,341 @@
+//! # teestatus
+//! Request info about teeworlds servers.
+//!
+//! Example
+//! ```rust,no_run
+//! # use teestatus::*;
+//! # use std::net::UdpSocket;
+//!
+//! env_logger::init();
+//! let sock = UdpSocket::bind("0.0.0.0:0").expect("can't bind socket");
+//! sock.connect("0.0.0.0:8303")
+//!     .expect("can't connect socket");
+//! println!("info: {:#?}", ServerInfo::new(&sock).unwrap());
+//! ```
+
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use bytes::{Buf, BufMut, BytesMut};
+use rand::Rng;
+use std::net::UdpSocket;
+use std::slice::IterMut;
+use thiserror::Error;
+
+/// Various errors
+#[derive(Error, Debug)]
+pub enum RequestError {
+    #[error("decode error '{0}'")]
+    DecodeError(#[from] std::str::Utf8Error),
+    #[error("parse error '{0}'")]
+    ParseError(#[from] std::num::ParseIntError),
+    #[error("io error '{0}'")]
+    IoError(#[from] std::io::Error),
+    #[error("missing data")]
+    Missing,
+}
+
+/// A type alias to handle Results with RequestError.
+pub type Result<T> = std::result::Result<T, RequestError>;
+
+/// Player info.
+#[derive(Debug)]
+pub struct Player {
+    pub name: String,
+    pub clan: String,
+    pub country: i32,
+    pub score: i32,
+    pub is_spectator: bool,
+}
+
+/// Server info.
+#[derive(Debug)]
+pub struct ServerInfo {
+    pub version: String,
+    pub name: String,
+    pub map: String,
+    pub password: bool,
+    pub game_type: String,
+    pub player_count: i32,
+    pub max_player_count: i32,
+    pub client_count: i32,
+    pub max_client_count: i32,
+    pub mapcrc: i32,
+    pub mapsize: i32,
+    pub players: Vec<Player>,
+}
+
+fn create_info_request() -> (BytesMut, i16, i8) {
+    let mut rng = rand::thread_rng();
+    let extra_token = rng.gen::<i16>();
+    let token = rng.gen::<i8>();
+
+    let mut buf = BytesMut::with_capacity(15);
+    buf.put(&b"xe"[..]); // magic_bytes
+    buf.put_i16(extra_token); // extra token
+                              // reserved
+    buf.put_u8(0xff);
+    buf.put_u8(0xff);
+    // padding
+    buf.put_u8(0xff);
+    buf.put_u8(0xff);
+    buf.put_u8(0xff);
+    buf.put_u8(0xff);
+    buf.put(&b"gie3"[..]); // vanilla request
+    buf.put_i8(token);
+
+    log::debug!("buffer: {:?}", buf);
+
+    (buf, extra_token, token)
+}
+
+fn get_player(data: &mut IterMut<&[u8]>, is_modern: bool) -> Result<Player> {
+    let name = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+    let clan = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+    let country = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+    let score = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+    let is_spectator = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+    if is_modern {
+        // Reserved
+        data.next();
+    }
+
+    Ok(Player {
+        name: name.to_string(),
+        clan: clan.to_string(),
+        country: country.parse()?,
+        score: score.parse()?,
+        is_spectator: is_spectator.parse::<i32>()? == 0,
+    })
+}
+
+impl ServerInfo {
+    /// The socket needs to be previously `connect`ed to a remote address.
+    pub fn new(sock: &UdpSocket) -> Result<ServerInfo> {
+        let (buf, extra_token, token) = create_info_request();
+
+        log::debug!("generated extra_token={}, token={}", extra_token, token);
+
+        let sent = sock.send(&buf)?;
+
+        log::debug!("sent {} bytes", sent);
+        if sent != buf.len() {
+            log::warn!(
+                "bytes sent ({}) not equal to buffer size ({})!",
+                sent,
+                buf.len()
+            );
+        }
+
+        // Max packet size in ddnet is 1400.
+        let mut recvbuf = [0; 1400];
+
+        let res = sock.recv(&mut recvbuf)?;
+
+        log::debug!("received {} bytes", res);
+
+        let mut data = &recvbuf[..];
+
+        // Skip padding
+        data.advance(10);
+
+        let svtype_raw = data.get_i32().to_be_bytes();
+        let svtype = std::str::from_utf8(&svtype_raw)?;
+
+        log::debug!("type value: {}", svtype);
+        let is_modern = svtype.eq("iext");
+
+        // Data is separated by a null.
+        let mut split: Vec<&[u8]> = data.split(|x| *x == 0x00).collect();
+        let mut data = split.iter_mut();
+
+        // Figure out this stuff.
+        let token_recv = {
+            let raw = data.next().ok_or_else(|| RequestError::Missing)?;
+            let num = raw.read_int::<LittleEndian>(raw.len())?;
+            num
+        };
+
+        log::debug!("token received: {}", token_recv);
+
+        let version = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+        log::debug!("version: {}", version);
+
+        let name = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+        log::debug!("name: {}", name);
+
+        let map = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+        log::debug!("map: {}", map);
+
+        let mut map_crc = "";
+        let mut map_size = "";
+
+        if is_modern {
+            map_crc = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+            log::debug!("map_crc: {}", map_crc);
+
+            map_size = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+            log::debug!("map_size: {}", map_size);
+        }
+
+        let game_type = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+        log::debug!("game_type: {}", game_type);
+
+        let flags = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+        log::debug!("flags: {}", flags);
+
+        let num_players = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+        log::debug!("num_players: {}", num_players);
+
+        let max_players = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let num_players = num_players.parse::<i32>()?;
+
+        log::debug!("max_players: {}", max_players);
+
+        let num_clients = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let num_clients = num_clients.parse::<i32>()?;
+
+        log::debug!("num_clients: {}", num_clients);
+
+        let max_clients = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+
+        log::debug!("max_clients: {}", max_clients);
+
+        let reserved = {
+            if is_modern {
+                std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?
+            } else {
+                ""
+            }
+        };
+
+        log::debug!("reserved: {}", reserved);
+
+        let mut players = vec![];
+
+        for _ in 0..num_clients {
+            if let Ok(player) = get_player(&mut data, is_modern) {
+                log::debug!("player loaded: {:?}", player);
+                players.push(player);
+            } else {
+                break;
+            }
+        }
+
+        // process "more" packets
+        // max 6 tries
+        for _ in 0..6 {
+            // Only check for more packets if the current one is really filled up.
+            log::debug!(
+                "num_clients {:?}, players len {:?}",
+                num_clients,
+                players.len()
+            );
+            if players.len() < num_clients as usize {
+                let mut recvbuf = [0; 1400];
+
+                log::debug!("receiving a 'more' packet");
+                if let Ok(res) = sock.recv(&mut recvbuf) {
+                    log::debug!("recv size: {:?}", res);
+
+                    if res > 0 {
+                        log::debug!("received more packets {:?}", res);
+                        let mut data = &recvbuf[..];
+
+                        // Skip padding
+                        data.advance(10);
+
+                        let more_type_raw = data.get_i32().to_be_bytes();
+                        let more_type = std::str::from_utf8(&more_type_raw)?;
+
+                        if !more_type.eq("iex+") {
+                            log::warn!(
+                                "'more' packet type field should match 'iex+' but it is '{:?}'",
+                                svtype
+                            );
+                        }
+
+                        log::debug!("type value: {}", more_type);
+
+                        // Data is separated by a null.
+                        let mut split: Vec<&[u8]> = data.split(|x| *x == 0x00).collect();
+                        let mut data = split.iter_mut();
+
+                        let token_recv = {
+                            let raw = data.next().ok_or_else(|| RequestError::Missing)?;
+                            let num = raw.read_int::<BigEndian>(raw.len())?;
+                            num
+                        };
+
+                        log::debug!("token number: {}", token_recv);
+
+                        let packet_no = {
+                            let raw = data.next().ok_or_else(|| RequestError::Missing)?;
+                            let num = raw.read_int::<LittleEndian>(raw.len())?;
+                            num
+                        };
+
+                        log::debug!("packet number: {}", packet_no);
+
+                        // reserved
+                        data.next();
+
+                        let len = players.len() as usize;
+                        for _ in 0..(num_clients as usize - len) {
+                            if let Ok(player) = get_player(&mut data, is_modern) {
+                                log::debug!("player loaded: {:?}", player);
+                                players.push(player);
+                            } else {
+                                break;
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(ServerInfo {
+            version: version.to_string(),
+            name: name.to_string(),
+            map: map.to_string(),
+            password: flags.eq("1"),
+            game_type: game_type.to_string(),
+            player_count: num_players,
+            max_player_count: max_players.parse()?,
+            client_count: num_clients,
+            max_client_count: max_clients.parse()?,
+            mapcrc: map_crc.parse().unwrap_or_else(|_| 0),
+            mapsize: map_size.parse().unwrap_or_else(|_| 0),
+            players,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::UdpSocket;
+    use std::time::Duration;
+
+    #[test]
+    fn it_works() {
+        env_logger::init();
+        let sock = UdpSocket::bind("0.0.0.0:0").expect("can't bind socket");
+        sock.set_write_timeout(Some(Duration::from_millis(400)))
+            .unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(400)))
+            .unwrap();
+        sock.connect("176.9.114.238:8334")
+            .expect("can't connect socket");
+        ServerInfo::new(&sock).unwrap();
+    }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "teestatus"
+version = "0.1.0"
+description = "Library to retrieve information from teeworlds servers and related mods."
+authors = ["Edgar <git@edgarluque.com>"]
+edition = "2018"
+repository = "https://github.com/edg-l/teestatus"
+license = "MIT"
+keywords = ["teeworlds", "ddracenetwork", "ddnet", "info"]
+categories = ["api-bindings"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+byteorder = "1.4.2"
+bytes = "1.0.1"
+env_logger = "0.8.2"
+log = "0.4.13"
+rand = "0.8.2"
+thiserror = "1.0.23"
