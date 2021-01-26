@@ -19,6 +19,7 @@ use rand::Rng;
 use std::net::UdpSocket;
 use std::slice::IterMut;
 use thiserror::Error;
+use std::collections::HashSet;
 
 /// Various errors
 #[derive(Error, Debug)]
@@ -31,6 +32,13 @@ pub enum RequestError {
     IoError(#[from] std::io::Error),
     #[error("missing data")]
     Missing,
+    #[error("token received by server is invalid")]
+    TokenError {
+        wanted_extra_token: u16,
+        wanted_token: u8,
+        received_extra_token: u16,
+        received_token: u8,
+    },
 }
 
 /// A type alias to handle Results with RequestError.
@@ -63,15 +71,16 @@ pub struct ServerInfo {
     pub players: Vec<Player>,
 }
 
-fn create_info_request() -> (BytesMut, i16, i8) {
+fn create_info_request() -> (BytesMut, u16, u8) {
     let mut rng = rand::thread_rng();
-    let extra_token = rng.gen::<i16>();
-    let token = rng.gen::<i8>();
+    let extra_token = rng.gen::<u16>();
+    let token = rng.gen::<u8>();
 
     let mut buf = BytesMut::with_capacity(15);
     buf.put(&b"xe"[..]); // magic_bytes
-    buf.put_i16(extra_token); // extra token
-                              // reserved
+    buf.put_u16(extra_token); // extra token
+
+    // reserved
     buf.put_u8(0xff);
     buf.put_u8(0xff);
     // padding
@@ -80,7 +89,7 @@ fn create_info_request() -> (BytesMut, i16, i8) {
     buf.put_u8(0xff);
     buf.put_u8(0xff);
     buf.put(&b"gie3"[..]); // vanilla request
-    buf.put_i8(token);
+    buf.put_u8(token);
 
     log::debug!("buffer: {:?}", buf);
 
@@ -148,14 +157,27 @@ impl ServerInfo {
         let mut split: Vec<&[u8]> = data.split(|x| *x == 0x00).collect();
         let mut data = split.iter_mut();
 
-        // Figure out this stuff.
-        let token_recv = {
-            let raw = data.next().ok_or_else(|| RequestError::Missing)?;
-            let num = raw.read_int::<LittleEndian>(raw.len())?;
-            num
+        // Token
+        let mixed_token_recv = {
+            let num_str = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+            num_str.parse::<i32>()?
         };
 
-        log::debug!("token received: {}", token_recv);
+        let extra_token_recv = ((mixed_token_recv >> 8) & 0xffff) as u16;
+        let token_recv = (mixed_token_recv & 0xff) as u8;
+
+        log::debug!("mixed token received: {}", mixed_token_recv);
+        log::debug!("token received: {} == {}", token, token_recv);
+        log::debug!("extra token received: {} == {}", extra_token, extra_token_recv);
+
+        if extra_token != extra_token_recv || token != token_recv {
+            return Err(RequestError::TokenError {
+                wanted_extra_token: extra_token,
+                wanted_token: token,
+                received_extra_token: extra_token_recv,
+                received_token: token_recv,
+            });
+        }
 
         let version = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
 
@@ -227,8 +249,13 @@ impl ServerInfo {
             }
         }
 
+        let mut more_packets = HashSet::new();
+
+        // Main packet num is 0.
+        more_packets.insert(0);
+
         // process "more" packets
-        // max 6 tries
+        // max 6 tries to avoid endless loops
         for _ in 0..6 {
             // Only check for more packets if the current one is really filled up.
             log::debug!(
@@ -236,6 +263,7 @@ impl ServerInfo {
                 num_clients,
                 players.len()
             );
+
             if players.len() < num_clients as usize {
                 let mut recvbuf = [0; 1400];
 
@@ -266,13 +294,27 @@ impl ServerInfo {
                         let mut split: Vec<&[u8]> = data.split(|x| *x == 0x00).collect();
                         let mut data = split.iter_mut();
 
-                        let token_recv = {
-                            let raw = data.next().ok_or_else(|| RequestError::Missing)?;
-                            let num = raw.read_int::<BigEndian>(raw.len())?;
-                            num
+                        // Token
+                        let mixed_token_recv = {
+                            let num_str = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+                            num_str.parse::<i32>()?
                         };
 
-                        log::debug!("token number: {}", token_recv);
+                        let extra_token_recv = ((mixed_token_recv >> 8) & 0xffff) as u16;
+                        let token_recv = (mixed_token_recv & 0xff) as u8;
+
+                        log::debug!("mixed token received: {}", mixed_token_recv);
+                        log::debug!("token received: {} == {}", token, token_recv);
+                        log::debug!("extra token received: {} == {}", extra_token, extra_token_recv);
+
+                        if extra_token != extra_token_recv || token != token_recv {
+                            return Err(RequestError::TokenError {
+                                wanted_extra_token: extra_token,
+                                wanted_token: token,
+                                received_extra_token: extra_token_recv,
+                                received_token: token_recv,
+                            });
+                        }
 
                         let packet_no = {
                             let raw = data.next().ok_or_else(|| RequestError::Missing)?;
@@ -334,7 +376,7 @@ mod tests {
             .unwrap();
         sock.set_read_timeout(Some(Duration::from_millis(400)))
             .unwrap();
-        sock.connect("176.9.114.238:8334")
+        sock.connect("45.88.109.25:8335")
             .expect("can't connect socket");
         ServerInfo::new(&sock).unwrap();
     }
