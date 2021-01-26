@@ -13,7 +13,6 @@
 //! println!("info: {:#?}", ServerInfo::new(&sock).unwrap());
 //! ```
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use bytes::{Buf, BufMut, BytesMut};
 use rand::Rng;
 use std::net::UdpSocket;
@@ -316,11 +315,16 @@ impl ServerInfo {
                             });
                         }
 
+
                         let packet_no = {
-                            let raw = data.next().ok_or_else(|| RequestError::Missing)?;
-                            let num = raw.read_int::<LittleEndian>(raw.len())?;
-                            num
+                            let num_str = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+                            num_str.parse::<i32>()?
                         };
+
+                        if !more_packets.insert(packet_no) {
+                            log::warn!("server sent a repeated packet: {}", packet_no);
+                            continue;
+                        }
 
                         log::debug!("packet number: {}", packet_no);
 
