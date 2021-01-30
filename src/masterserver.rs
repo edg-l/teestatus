@@ -1,12 +1,13 @@
 use byteorder::{BigEndian, ReadBytesExt};
+use std::collections::HashSet;
 use std::net::{Ipv6Addr, UdpSocket};
 use std::{
     borrow::Cow,
     net::{IpAddr, Ipv4Addr},
 };
 
-use crate::errors::*;
 use crate::util::*;
+use crate::errors::*;
 
 pub struct MasterServer<'a> {
     pub hostname: Cow<'a, str>,
@@ -17,7 +18,7 @@ pub struct MasterServer<'a> {
 
 impl<'a> MasterServer<'a> {
     // Returns a vector filled with a pair of ip + port.
-    pub fn get_server_list(&self, sock: &UdpSocket) -> Result<Vec<(IpAddr, u16)>> {
+    pub fn get_server_list(&self, sock: &UdpSocket) -> Result<HashSet<(IpAddr, u16)>> {
         sock.connect(format!("{}:{}", self.hostname, self.port))
             .unwrap();
 
@@ -25,29 +26,29 @@ impl<'a> MasterServer<'a> {
 
         let (buf, _, _) = create_packet(PacketType::GetCount, Some(b"\xff\xff"), false);
         let sent = sock.send(&buf)?;
-        log::debug!("sent = {}", sent);
+        log::debug!("sent GetCount = {}", sent);
 
         let (buf, _, _) = create_packet(PacketType::GetList, Some(b"\xff\xff"), false);
         let sent = sock.send(&buf)?;
-        log::debug!("sent = {}", sent);
+        log::debug!("sent GetList = {}", sent);
 
         let (buf, _, _) = create_packet(PacketType::GetInfo, Some(b"xe"), true);
         let sent = sock.send(&buf)?;
-        log::debug!("sent = {}", sent);
+        log::debug!("sent GetInfo = {}", sent);
 
         sock.set_nonblocking(false)?;
 
         let mut count = None;
-        let mut servers = vec![];
+        let mut servers = HashSet::new();
 
-        loop {
+        'outer: loop {
             let mut recvbuf = [0; 1400];
             let res = sock.recv(&mut recvbuf);
-            // log::debug!("data received: {:?}", recvbuf);
 
             match res {
                 Err(_) => break,
                 Ok(res) => {
+                    log::debug!("received data size: {}", res);
                     if res > 0 {
                         let packet_id = &recvbuf[10..14];
 
@@ -55,12 +56,15 @@ impl<'a> MasterServer<'a> {
 
                         if PacketType::Count == *packet_id {
                             log::debug!("Processing Count packet.");
+
                             let mut val = &recvbuf[14..=15];
                             count = Some(val.read_u16::<BigEndian>()?);
+
                             log::debug!("master server count: {:?}", count);
                         } else if PacketType::List == *packet_id {
                             log::debug!("Processing List packet.");
                             let mut ip;
+
                             for i in (14..(recvbuf.len() - 14)).step_by(18) {
                                 if &recvbuf[i..i + 12]
                                     == b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff"
@@ -89,15 +93,15 @@ impl<'a> MasterServer<'a> {
                                 let port = (&recvbuf[i + 16..i + 18]).read_u16::<BigEndian>()?;
 
                                 if port == 0 || ip.is_unspecified() {
-                                    break;
+                                    continue;
                                 }
                                 log::debug!("Adding ip '{}' and port {}", ip, port);
-                                servers.push((ip, port));
+                                servers.insert((ip, port));
 
                                 if let Some(count) = count {
                                     if servers.len() >= count as usize {
                                         log::debug!("Added all servers.");
-                                        break;
+                                        break 'outer;
                                     }
                                 }
                             }
