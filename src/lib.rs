@@ -18,6 +18,10 @@
 //! ```
 //! Example to fetch servers from a master server:
 //! ```rust,no_run
+//! use teestatus::*;
+//! use std::net::UdpSocket;
+//! use std::borrow::Cow;
+//!
 //! let master = MasterServer {
 //! 	hostname: Cow::Borrowed("49.12.97.180"),
 //! 	port: 8300,

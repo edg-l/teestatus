@@ -1,4 +1,4 @@
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
 use std::net::UdpSocket;
 use std::slice::IterMut;
 use std::collections::HashSet;
@@ -24,11 +24,11 @@ pub struct ServerInfo {
 }
 
 fn get_player(data: &mut IterMut<&[u8]>, is_modern: bool) -> Result<Player> {
-    let name = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
-    let clan = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
-    let country = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
-    let score = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
-    let is_spectator = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+    let name = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
+    let clan = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
+    let country = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
+    let score = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
+    let is_spectator = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
     if is_modern {
         // Reserved
@@ -88,7 +88,7 @@ impl ServerInfo {
 
         // Token
         let mixed_token_recv = {
-            let num_str = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+            let num_str = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
             num_str.parse::<i32>()?
         };
 
@@ -108,15 +108,15 @@ impl ServerInfo {
             });
         }
 
-        let version = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let version = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
         log::debug!("version: {}", version);
 
-        let name = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let name = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
         log::debug!("name: {}", name);
 
-        let map = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let map = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
         log::debug!("map: {}", map);
 
@@ -124,42 +124,42 @@ impl ServerInfo {
         let mut map_size = "";
 
         if is_modern {
-            map_crc = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+            map_crc = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
             log::debug!("map_crc: {}", map_crc);
 
-            map_size = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+            map_size = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
             log::debug!("map_size: {}", map_size);
         }
 
-        let game_type = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let game_type = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
         log::debug!("game_type: {}", game_type);
 
-        let flags = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let flags = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
         log::debug!("flags: {}", flags);
 
-        let num_players = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let num_players = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
         log::debug!("num_players: {}", num_players);
 
-        let max_players = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let max_players = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
         let num_players = num_players.parse::<i32>()?;
 
         log::debug!("max_players: {}", max_players);
 
-        let num_clients = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let num_clients = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
         let num_clients = num_clients.parse::<i32>()?;
 
         log::debug!("num_clients: {}", num_clients);
 
-        let max_clients = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+        let max_clients = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
 
         log::debug!("max_clients: {}", max_clients);
 
         let reserved = {
             if is_modern {
-                std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?
+                std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?
             } else {
                 ""
             }
@@ -225,7 +225,7 @@ impl ServerInfo {
 
                         // Token
                         let mixed_token_recv = {
-                            let num_str = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+                            let num_str = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
                             num_str.parse::<i32>()?
                         };
 
@@ -247,7 +247,7 @@ impl ServerInfo {
 
 
                         let packet_no = {
-                            let num_str = std::str::from_utf8(data.next().ok_or_else(|| RequestError::Missing)?)?;
+                            let num_str = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
                             num_str.parse::<i32>()?
                         };
 

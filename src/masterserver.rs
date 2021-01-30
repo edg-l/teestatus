@@ -17,7 +17,7 @@ pub struct MasterServer<'a> {
 
 impl<'a> MasterServer<'a> {
     // Returns a vector filled with a pair of ip + port.
-    pub fn get_server_list(&self, sock: &UdpSocket) -> Result<(Vec<(IpAddr, u16)>)> {
+    pub fn get_server_list(&self, sock: &UdpSocket) -> Result<Vec<(IpAddr, u16)>> {
         sock.connect(format!("{}:{}", self.hostname, self.port))
             .unwrap();
 
