@@ -18,3 +18,13 @@ fn main() {
 	println!("info: {:#?}", ServerInfo::new(&sock).unwrap());
 }
 ```
+
+Example to fetch servers from a master server:
+```rust,no_run
+let master = MasterServer {
+	hostname: Cow::Borrowed("49.12.97.180"),
+	port: 8300,
+};
+let sock = UdpSocket::bind("0.0.0.0:0").expect("can't bind socket");
+let servers = master.get_server_list(&sock).unwrap();
+```
