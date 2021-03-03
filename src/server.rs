@@ -3,6 +3,9 @@ use std::net::UdpSocket;
 use std::slice::IterMut;
 use std::collections::HashSet;
 
+use std::fs::File;
+use std::io::prelude::*;
+
 use crate::util::*;
 use crate::common::*;
 use crate::errors::*;
@@ -47,6 +50,7 @@ fn get_player(data: &mut IterMut<&[u8]>, is_modern: bool) -> Result<Player> {
 impl ServerInfo {
     /// The socket needs to be previously `connect`ed to a remote address.
     pub fn new(sock: &UdpSocket) -> Result<ServerInfo> {
+        let mut file = File::create("server_output.data")?;
         let (buf, extra_token, token) = create_packet(PacketType::GetInfo, Some(b"xe"), true);
 
         let token = token.expect("token should always have value here.");
@@ -68,6 +72,8 @@ impl ServerInfo {
         let mut recvbuf = [0; 1400];
 
         let res = sock.recv(&mut recvbuf)?;
+
+        file.write(&recvbuf).expect("failed to write to file");
 
         log::debug!("received {} bytes", res);
 
@@ -185,7 +191,7 @@ impl ServerInfo {
 
         // process "more" packets
         // max 6 tries to avoid endless loops
-        for _ in 0..6 {
+        for kk in 0..6 {
             // Only check for more packets if the current one is really filled up.
             log::debug!(
                 "num_clients {:?}, players len {:?}",
@@ -201,6 +207,11 @@ impl ServerInfo {
                     log::debug!("recv size: {:?}", res);
 
                     if res > 0 {
+
+                        {
+                            let mut file = File::create(format!("server_output_{:?}.data", kk))?;
+                            file.write(&recvbuf).expect("failed to write file");
+                        }
                         log::debug!("received more packets {:?}", res);
                         let mut data = &recvbuf[..];
 
@@ -299,9 +310,8 @@ impl ServerInfo {
 #[cfg(test)]
 mod tests {
     use crate::*;
-    use std::net::UdpSocket;
-    use std::time::Duration;
 
+    /*
     #[test]
     fn it_works() {
         env_logger::init();
@@ -310,8 +320,9 @@ mod tests {
             .unwrap();
         sock.set_read_timeout(Some(Duration::from_millis(400)))
             .unwrap();
-        sock.connect("94.237.94.154:8309")
+        sock.connect("130.61.123.168:8341")
             .expect("can't connect socket");
         ServerInfo::new(&sock).unwrap();
     }
+    */
 }
