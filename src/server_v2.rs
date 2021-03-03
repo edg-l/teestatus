@@ -99,8 +99,8 @@ impl<'a> ServerInfo<'a> {
     // todo parse to faisl
     // https://github.com/Geal/nom/blob/master/doc/making_a_new_parser_from_scratch.md
     //fn parse<S: AsRef<[u8]> + 'a, T: AsRef<[S]> + 'a>(data: T) -> Result<ServerInfo<'a>> {
-    fn parse<S: AsRef<[u8]>>(main_data: &'a S, more_data: Option<&'a S>) -> Result<ServerInfo<'a>> {
-        let (_input, info) = server_info(main_data.as_ref()).unwrap();
+    fn parse_main<S: AsRef<[u8]>>(data: &'a S) -> Result<ServerInfo<'a>> {
+        let (_input, info) = server_info(data.as_ref()).unwrap();
 
         let mut server_info = ServerInfo {
             token: info.0,
@@ -122,19 +122,29 @@ impl<'a> ServerInfo<'a> {
 
         server_info.players.extend(ps);
 
-        if let Some(more_packet) = more_data {
-            let (input, _) =
-                tuple((padding, response_type, next_int, next_int, next_str))(more_packet.as_ref())
-                    .unwrap();
-
-            let (_, (more_players, _)) = read_players(input).unwrap();
-            server_info.players.extend(more_players);
-        }
-
         Ok(server_info)
     }
 
-    pub fn new_v2(sock: &UdpSocket, main_buffer: &'a mut Vec<u8>) -> Result<ServerInfo<'a>> {
+    fn parse_more<S: AsRef<[u8]>>(&mut self, data: &'a S) {
+        let (input, _) =
+            tuple((padding, response_type, next_int, next_int, next_str))(data.as_ref())
+                .unwrap();
+
+        let (_, (more_players, _)) = read_players(input).unwrap();
+        self.players.extend(more_players);
+    }
+
+    pub fn create_buffers() -> Vec<Vec<u8>> {
+        let mut buffers = Vec::new();
+        // Main buffer
+        buffers.push(Vec::with_capacity(1400));
+        // More packet buffer
+        buffers.push(Vec::with_capacity(1400));
+
+        buffers
+    }
+
+    pub fn new_v2(sock: &UdpSocket, buffers: &'a mut Vec<Vec<u8>>) -> Result<ServerInfo<'a>> {
         let (buf, extra_token, token) = create_packet(PacketType::GetInfo, Some(b"xe"), true);
         let token = token.expect("token should always have value here.");
 
@@ -151,16 +161,21 @@ impl<'a> ServerInfo<'a> {
             );
         }
 
-        // Max packet size in ddnet is 1400.
-        main_buffer.reserve_exact(1400);
-        //let mut more_data = Vec::with_capacity(1400);
+        let ref mut iter = buffers.iter_mut();
 
-        let res = sock.recv(main_buffer)?;
+        if let Some(data) = iter.next() {
+            let res = sock.recv(data)?;
+            log::debug!("received {} packets", res);
+            let mut info = ServerInfo::parse_main(data).unwrap();
 
-        log::debug!("received {} packets", res);
+            while let Some(more_data) = iter.next() {
+                info.parse_more(more_data);
+            }
 
-        let info = ServerInfo::parse(main_buffer, None).unwrap();
-        Ok(info)
+            Ok(info)
+        } else {
+            unimplemented!()
+        }
     }
 }
 
@@ -172,7 +187,7 @@ mod tests {
     fn it_works() {
         env_logger::init();
         let data = include_bytes!("server_response.data");
-        let info = ServerInfo::parse(data, None).unwrap();
+        let info = ServerInfo::parse_main(&data).unwrap();
         log::info!("{:#?}", info);
     }
 }
