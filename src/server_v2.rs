@@ -96,9 +96,6 @@ fn get_player(i: &[u8]) -> IResult<&[u8], Player> {
 }
 
 impl<'a> ServerInfo<'a> {
-    // todo parse to faisl
-    // https://github.com/Geal/nom/blob/master/doc/making_a_new_parser_from_scratch.md
-    //fn parse<S: AsRef<[u8]> + 'a, T: AsRef<[S]> + 'a>(data: T) -> Result<ServerInfo<'a>> {
     fn parse_main<S: AsRef<[u8]>>(data: &'a S) -> Result<ServerInfo<'a>> {
         let (_input, info) = server_info(data.as_ref()).unwrap();
 
