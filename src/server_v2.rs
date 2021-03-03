@@ -1,8 +1,7 @@
 use nom::sequence::tuple;
 use nom::IResult;
 use nom::{
-    char, cond, do_parse, many_till, map_res, named, tag, take,
-    take_str, take_until, terminated,
+    char, cond, do_parse, many_till, map_res, named, tag, take, take_str, take_until, terminated,
 };
 use std::net::UdpSocket;
 
@@ -124,8 +123,7 @@ impl<'a> ServerInfo<'a> {
 
     fn parse_more<S: AsRef<[u8]>>(&mut self, data: &'a S) {
         let (input, _) =
-            tuple((padding, response_type, next_int, next_int, next_str))(data.as_ref())
-                .unwrap();
+            tuple((padding, response_type, next_int, next_int, next_str))(data.as_ref()).unwrap();
 
         let (_, (more_players, _)) = read_players(input).unwrap();
         self.players.extend(more_players);
@@ -165,8 +163,13 @@ impl<'a> ServerInfo<'a> {
             log::debug!("received {} packets", res);
             let mut info = ServerInfo::parse_main(data).unwrap();
 
-            while let Some(more_data) = iter.next() {
-                info.parse_more(more_data);
+            if (info.client_count as usize) < info.players.len() {
+                while let Some(more_data) = iter.next() {
+                    let res = sock.recv(more_data)?;
+                    if res > 0 {
+                        info.parse_more(more_data);
+                    }
+                }
             }
 
             Ok(info)
