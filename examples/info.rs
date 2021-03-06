@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::net::UdpSocket;
 use teestatus::*;
 use std::time::Duration;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() {
     env_logger::init();
@@ -46,12 +48,13 @@ fn main() {
     servers.extend(&master1.get_server_list(&sock).unwrap());
     println!("Loaded {}", servers.len());
 
-    let mut server_infos = vec![];
+    let mut server_infos: Vec<(ServerInfo, RefCell<Vec<Vec<u8>>>)> = vec![];
 
     for (ip, port) in servers.iter() {
         let addr = format!("{}:{}", ip.to_string(), port);
         sock.connect(addr.clone()).unwrap();
-        match ServerInfo::new(&sock) {
+        let mut buffers = RefCell::new(ServerInfo::create_buffers());
+        match ServerInfo::new(&sock, buffers.borrow_mut().as_mut()) {
             Ok(info) => {
                 println!("Loaded server '{}'", info.name);
                 println!(
@@ -60,7 +63,7 @@ fn main() {
                     info.client_count,
                     info.max_client_count
                 );
-                server_infos.push(info);
+                server_infos.push((info, buffers.clone()));
             }
             Err(e) => {
                 println!("Error loading server: {}", addr);

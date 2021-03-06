@@ -32,7 +32,6 @@
 
 pub mod errors;
 
-mod server_v2;
 mod server;
 mod masterserver;
 mod common;

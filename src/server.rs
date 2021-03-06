@@ -1,58 +1,162 @@
-use bytes::Buf;
+use log::debug;
+use nom::sequence::tuple;
+use nom::IResult;
+use nom::{
+    char, cond, do_parse, many_till, map_res, named, tag, take, take_str, take_until, terminated,
+    dbg_dmp
+};
 use std::net::UdpSocket;
-use std::slice::IterMut;
-use std::collections::HashSet;
 
-use std::fs::File;
-use std::io::prelude::*;
-
-use crate::util::*;
-use crate::common::*;
 use crate::errors::*;
+use crate::util::*;
+
+/// Player info.
+#[derive(Debug)]
+pub struct Player<'a> {
+    pub name: &'a str,
+    pub clan: &'a str,
+    pub country: i32,
+    pub score: i32,
+    pub is_player: bool,
+    pub reserved: &'a str,
+}
 
 #[derive(Debug)]
-pub struct ServerInfo {
-    pub version: String,
-    pub name: String,
-    pub map: String,
+pub struct ServerInfo<'a> {
+    pub version: &'a str,
+    pub token: i32,
+    pub name: &'a str,
+    pub map: &'a str,
     pub password: bool,
-    pub game_type: String,
+    pub game_type: &'a str,
     pub player_count: i32,
     pub max_player_count: i32,
     pub client_count: i32,
     pub max_client_count: i32,
-    pub mapcrc: i32,
-    pub mapsize: i32,
-    pub players: Vec<Player>,
+    pub map_crc: Option<i32>,
+    pub map_size: Option<i32>,
+    pub players: Vec<Player<'a>>,
+    pub buffers: Vec<Vec<u8>>,
 }
 
-fn get_player(data: &mut IterMut<&[u8]>, is_modern: bool) -> Result<Player> {
-    let name = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-    let clan = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-    let country = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-    let score = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-    let is_spectator = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
+named!(padding, take!(10));
+named!(response_type<&str>, take_str!(4));
 
-    if is_modern {
-        // Reserved
-        data.next();
+named!(next_data, 
+    dbg_dmp!(terminated!(take_until!("\0"), char!('\0')))
+);
+
+named!(
+    next_str<&str>,
+    dbg_dmp!(map_res!(next_data, |x| std::str::from_utf8(x)))
+);
+
+named!(
+    next_int<i32>,
+    dbg_dmp!(map_res!(next_str, |s: &str| s.parse::<i32>()))
+);
+
+#[rustfmt::skip]
+named!(server_info<(
+        i32, &str, &str, &str, 
+        Option<i32>, Option<i32>,
+        i32, i32, i32, i32, i32, &str)>,
+    do_parse!(
+        padd: padding >>
+        resp_type: response_type >>
+        token: next_int >>
+        version: next_str >>
+        name: next_str >>
+        map: next_str >>
+        map_crc: cond!(resp_type == "iext", next_int) >>
+        map_size: cond!(resp_type == "iext", next_int) >>
+        game_type: next_str >>
+        flags: next_int >>
+        num_players: next_int >>
+        max_players: next_int >>
+        num_clients: next_int >>
+        max_clients: next_int >>
+        reserved: next_str >>
+        (token, version, name, map, map_crc, map_size, num_players, max_players, num_clients, max_clients, flags, game_type)
+    )
+);
+
+named!(read_players<&[u8], (Vec<Player>, &[u8])>, many_till!(get_player, tag!("\0\0")));
+
+fn get_player(i: &[u8]) -> IResult<&[u8], Player> {
+    let (input, (name, clan, country, score, is_player, reserved)) =
+        tuple((next_str, next_str, next_int, next_int, next_int, next_str))(i)?;
+    IResult::Ok((
+        input,
+        Player {
+            name,
+            clan,
+            country,
+            score,
+            is_player: is_player == 1,
+            reserved,
+        },
+    ))
+}
+
+impl<'a> ServerInfo<'a> {
+    /// Parses the main packet.
+    fn parse_main<S: AsRef<[u8]>>(data: &'a S) -> Result<ServerInfo<'a>> {
+        let (input, info) = server_info(data.as_ref()).unwrap();
+
+        let mut server_info = ServerInfo {
+            token: info.0,
+            version: info.1,
+            name: info.2,
+            map: info.3,
+            map_crc: info.4,
+            map_size: info.5,
+            player_count: info.6,
+            max_player_count: info.7,
+            client_count: info.8,
+            max_client_count: info.9,
+            password: (info.10 & 1) == 1,
+            game_type: info.11,
+            players: Vec::new(),
+            buffers: Vec::new(),
+        };
+
+        let (_input, (ps, _)) = read_players(input).unwrap();
+
+        server_info.players.extend(ps);
+
+        Ok(server_info)
     }
 
-    Ok(Player {
-        name: name.to_string(),
-        clan: clan.to_string(),
-        country: country.parse()?,
-        score: score.parse()?,
-        is_spectator: is_spectator.parse::<i32>()? == 0,
-    })
-}
+    /// Parses the more packet.
+    fn parse_more<S: AsRef<[u8]>>(&mut self, data: &'a S) {
+        let (input, _) =
+            tuple((padding, response_type, next_int, next_int, next_str))(data.as_ref()).unwrap();
 
-impl ServerInfo {
-    /// The socket needs to be previously `connect`ed to a remote address.
-    pub fn new(sock: &UdpSocket) -> Result<ServerInfo> {
-        let mut file = File::create("server_output.data")?;
+        let (_, (more_players, _)) = read_players(input).unwrap();
+        self.players.extend(more_players);
+    }
+
+    /// Creates the necessary buffers that you need to hold and use to get the server info.
+    pub fn create_buffers() -> Vec<Vec<u8>> {
+        let mut buffers = Vec::new();
+        // Main buffer
+        let main_vec = vec![0; 1400];
+        buffers.push(main_vec);
+        // More packet buffer
+        let more_vec = vec![0; 1400];
+        buffers.push(more_vec);
+
+        buffers
+    }
+
+    /// The socket must be already connected.
+    /// Using the provided buffers to hold the response,
+    /// this function parses the data received doing 0 copy into a [ServerInfo].
+    ///
+    /// See also [ServerInfo::create_buffers()]
+    pub fn new(sock: &UdpSocket, buffers: &'a mut Vec<Vec<u8>>) -> Result<ServerInfo<'a>> {
         let (buf, extra_token, token) = create_packet(PacketType::GetInfo, Some(b"xe"), true);
-
         let token = token.expect("token should always have value here.");
 
         log::debug!("generated extra_token={}, token={}", extra_token, token);
@@ -68,252 +172,49 @@ impl ServerInfo {
             );
         }
 
-        // Max packet size in ddnet is 1400.
-        let mut recvbuf = [0; 1400];
+        let ref mut iter = buffers.iter_mut();
 
-        let res = sock.recv(&mut recvbuf)?;
+        if let Some(data) = iter.next() {
+            let res = sock.recv(data)?;
 
-        file.write(&recvbuf).expect("failed to write to file");
+            log::debug!("received {} packets", res);
+            let mut info = ServerInfo::parse_main(data).unwrap();
 
-        log::debug!("received {} bytes", res);
+            debug!("Players parsed={} total_players={}", info.players.len(), info.max_client_count);
 
-        let mut data = &recvbuf[..];
-
-        // Skip padding
-        data.advance(10);
-
-        let svtype_raw = data.get_i32().to_be_bytes();
-        let svtype = std::str::from_utf8(&svtype_raw)?;
-
-        log::debug!("type value: {}", svtype);
-        let is_modern = svtype.eq("iext");
-
-        // Data is separated by a null.
-        let mut split: Vec<&[u8]> = data.split(|x| *x == 0x00).collect();
-        let mut data = split.iter_mut();
-
-        // Token
-        let mixed_token_recv = {
-            let num_str = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-            num_str.parse::<i32>()?
-        };
-
-        let extra_token_recv = ((mixed_token_recv >> 8) & 0xffff) as u16;
-        let token_recv = (mixed_token_recv & 0xff) as u8;
-
-        log::debug!("mixed token received: {}", mixed_token_recv);
-        log::debug!("token received: {} == {}", token, token_recv);
-        log::debug!("extra token received: {} == {}", extra_token, extra_token_recv);
-
-        if is_modern && extra_token != extra_token_recv || token != token_recv {
-            return Err(RequestError::TokenError {
-                wanted_extra_token: extra_token,
-                wanted_token: token,
-                received_extra_token: extra_token_recv,
-                received_token: token_recv,
-            });
-        }
-
-        let version = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-
-        log::debug!("version: {}", version);
-
-        let name = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-
-        log::debug!("name: {}", name);
-
-        let map = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-
-        log::debug!("map: {}", map);
-
-        let mut map_crc = "";
-        let mut map_size = "";
-
-        if is_modern {
-            map_crc = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-            log::debug!("map_crc: {}", map_crc);
-
-            map_size = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-            log::debug!("map_size: {}", map_size);
-        }
-
-        let game_type = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-
-        log::debug!("game_type: {}", game_type);
-
-        let flags = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-
-        log::debug!("flags: {}", flags);
-
-        let num_players = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-
-        log::debug!("num_players: {}", num_players);
-
-        let max_players = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-        let num_players = num_players.parse::<i32>()?;
-
-        log::debug!("max_players: {}", max_players);
-
-        let num_clients = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-        let num_clients = num_clients.parse::<i32>()?;
-
-        log::debug!("num_clients: {}", num_clients);
-
-        let max_clients = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-
-        log::debug!("max_clients: {}", max_clients);
-
-        let reserved = {
-            if is_modern {
-                std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?
-            } else {
-                ""
-            }
-        };
-
-        log::debug!("reserved: {}", reserved);
-
-        let mut players = vec![];
-
-        for _ in 0..num_clients {
-            if let Ok(player) = get_player(&mut data, is_modern) {
-                log::debug!("player loaded: {:?}", player);
-                players.push(player);
-            } else {
-                break;
-            }
-        }
-
-        let mut more_packets = HashSet::new();
-
-        // Main packet num is 0.
-        more_packets.insert(0);
-
-        // process "more" packets
-        // max 6 tries to avoid endless loops
-        for kk in 0..6 {
-            // Only check for more packets if the current one is really filled up.
-            log::debug!(
-                "num_clients {:?}, players len {:?}",
-                num_clients,
-                players.len()
-            );
-
-            if players.len() < num_clients as usize {
-                let mut recvbuf = [0; 1400];
-
-                log::debug!("receiving a 'more' packet");
-                if let Ok(res) = sock.recv(&mut recvbuf) {
-                    log::debug!("recv size: {:?}", res);
-
+            if info.players.len() < info.client_count as usize {
+                while let Some(more_data) = iter.next() {
+                    let res = sock.recv(more_data)?;
                     if res > 0 {
-
-                        {
-                            let mut file = File::create(format!("server_output_{:?}.data", kk))?;
-                            file.write(&recvbuf).expect("failed to write file");
-                        }
-                        log::debug!("received more packets {:?}", res);
-                        let mut data = &recvbuf[..];
-
-                        // Skip padding
-                        data.advance(10);
-
-                        let more_type_raw = data.get_i32().to_be_bytes();
-                        let more_type = std::str::from_utf8(&more_type_raw)?;
-
-                        if !more_type.eq("iex+") {
-                            log::warn!(
-                                "'more' packet type field should match 'iex+' but it is '{:?}'",
-                                svtype
-                            );
-                        }
-
-                        log::debug!("type value: {}", more_type);
-
-                        // Data is separated by a null.
-                        let mut split: Vec<&[u8]> = data.split(|x| *x == 0x00).collect();
-                        let mut data = split.iter_mut();
-
-                        // Token
-                        let mixed_token_recv = {
-                            let num_str = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-                            num_str.parse::<i32>()?
-                        };
-
-                        let extra_token_recv = ((mixed_token_recv >> 8) & 0xffff) as u16;
-                        let token_recv = (mixed_token_recv & 0xff) as u8;
-
-                        log::debug!("mixed token received: {}", mixed_token_recv);
-                        log::debug!("token received: {} == {}", token, token_recv);
-                        log::debug!("extra token received: {} == {}", extra_token, extra_token_recv);
-
-                        if extra_token != extra_token_recv || token != token_recv {
-                            return Err(RequestError::TokenError {
-                                wanted_extra_token: extra_token,
-                                wanted_token: token,
-                                received_extra_token: extra_token_recv,
-                                received_token: token_recv,
-                            });
-                        }
-
-
-                        let packet_no = {
-                            let num_str = std::str::from_utf8(data.next().ok_or(RequestError::Missing)?)?;
-                            num_str.parse::<i32>()?
-                        };
-
-                        if !more_packets.insert(packet_no) {
-                            log::warn!("server sent a repeated packet: {}", packet_no);
-                            continue;
-                        }
-
-                        log::debug!("packet number: {}", packet_no);
-
-                        // reserved
-                        data.next();
-
-                        let len = players.len() as usize;
-                        for _ in 0..(num_clients as usize - len) {
-                            if let Ok(player) = get_player(&mut data, is_modern) {
-                                log::debug!("player loaded: {:?}", player);
-                                players.push(player);
-                            } else {
-                                break;
-                            }
-                        }
-                    } else {
-                        break;
+                        info.parse_more(more_data);
                     }
+                    debug!("Players parsed={} total_players={}", info.players.len(), info.client_count);
                 }
-            } else {
-                break;
             }
-        }
 
-        Ok(ServerInfo {
-            version: version.to_string(),
-            name: name.to_string(),
-            map: map.to_string(),
-            password: flags.eq("1"),
-            game_type: game_type.to_string(),
-            player_count: num_players,
-            max_player_count: max_players.parse()?,
-            client_count: num_clients,
-            max_client_count: max_clients.parse()?,
-            mapcrc: map_crc.parse().unwrap_or_else(|_| 0),
-            mapsize: map_size.parse().unwrap_or_else(|_| 0),
-            players,
-        })
+            Ok(info)
+        } else {
+            unimplemented!()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::*;
+    use super::*;
+
+    #[test]
+    fn it_works() {
+        let data = include_bytes!("samples/server_info.data");
+        let data_more = include_bytes!("samples/server_info_more.data");
+        let mut info = ServerInfo::parse_main(&data).unwrap();
+        info.parse_more(&data_more);
+    }
 
     /*
     #[test]
-    fn it_works() {
+    fn it_works_2() {
+        use std::time::Duration;
         env_logger::init();
         let sock = UdpSocket::bind("0.0.0.0:0").expect("can't bind socket");
         sock.set_write_timeout(Some(Duration::from_millis(400)))
@@ -322,7 +223,8 @@ mod tests {
             .unwrap();
         sock.connect("130.61.123.168:8341")
             .expect("can't connect socket");
-        ServerInfo::new(&sock).unwrap();
+        let mut buffers = ServerInfo::create_buffers();
+        ServerInfo::new(&sock, &mut buffers).unwrap();
     }
     */
 }
