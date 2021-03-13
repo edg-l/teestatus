@@ -2,8 +2,8 @@ use log::debug;
 use nom::sequence::tuple;
 use nom::IResult;
 use nom::{
-    char, cond, do_parse, many_till, map_res, named, tag, take, take_str, take_until, terminated,
-    dbg_dmp
+    char, cond, dbg_dmp, do_parse, many_till, map_res, named, tag, take, take_str, take_until,
+    terminated,
 };
 use std::net::UdpSocket;
 
@@ -42,7 +42,8 @@ pub struct ServerInfo<'a> {
 named!(padding, take!(10));
 named!(response_type<&str>, take_str!(4));
 
-named!(next_data, 
+named!(
+    next_data,
     dbg_dmp!(terminated!(take_until!("\0"), char!('\0')))
 );
 
@@ -101,8 +102,8 @@ fn get_player(i: &[u8]) -> IResult<&[u8], Player> {
 
 impl<'a> ServerInfo<'a> {
     /// Parses the main packet.
-    fn parse_main<S: AsRef<[u8]>>(data: &'a S) -> Result<ServerInfo<'a>> {
-        let (input, info) = server_info(data.as_ref()).unwrap();
+    fn parse_main(data: &'a [u8]) -> Result<ServerInfo<'a>> {
+        let (input, info) = server_info(data).unwrap();
 
         let mut server_info = ServerInfo {
             token: info.0,
@@ -121,15 +122,16 @@ impl<'a> ServerInfo<'a> {
             buffers: Vec::new(),
         };
 
-        let (_input, (ps, _)) = read_players(input).unwrap();
-
-        server_info.players.extend(ps);
+        if server_info.client_count > 0 {
+            let (_input, (ps, _)) = read_players(input).unwrap();
+            server_info.players.extend(ps);
+        }
 
         Ok(server_info)
     }
 
     /// Parses the more packet.
-    fn parse_more<S: AsRef<[u8]>>(&mut self, data: &'a S) {
+    fn parse_more(&mut self, data: &'a [u8]) {
         let (input, _) =
             tuple((padding, response_type, next_int, next_int, next_str))(data.as_ref()).unwrap();
 
@@ -152,7 +154,7 @@ impl<'a> ServerInfo<'a> {
 
     /// The socket must be already connected.
     /// Using the provided buffers to hold the response,
-    /// this function parses the data received doing 0 copy into a [ServerInfo].
+    /// this function parses the data received doing zero copy into a [ServerInfo].
     ///
     /// See also [ServerInfo::create_buffers()]
     pub fn new(sock: &UdpSocket, buffers: &'a mut Vec<Vec<u8>>) -> Result<ServerInfo<'a>> {
@@ -180,7 +182,11 @@ impl<'a> ServerInfo<'a> {
             log::debug!("received {} packets", res);
             let mut info = ServerInfo::parse_main(data).unwrap();
 
-            debug!("Players parsed={} total_players={}", info.players.len(), info.max_client_count);
+            debug!(
+                "Players parsed={} total_players={}",
+                info.players.len(),
+                info.max_client_count
+            );
 
             if info.players.len() < info.client_count as usize {
                 while let Some(more_data) = iter.next() {
@@ -188,7 +194,11 @@ impl<'a> ServerInfo<'a> {
                     if res > 0 {
                         info.parse_more(more_data);
                     }
-                    debug!("Players parsed={} total_players={}", info.players.len(), info.client_count);
+                    debug!(
+                        "Players parsed={} total_players={}",
+                        info.players.len(),
+                        info.client_count
+                    );
                 }
             }
 
@@ -207,8 +217,8 @@ mod tests {
     fn it_works() {
         let data = include_bytes!("samples/server_info.data");
         let data_more = include_bytes!("samples/server_info_more.data");
-        let mut info = ServerInfo::parse_main(&data).unwrap();
-        info.parse_more(&data_more);
+        let mut info = ServerInfo::parse_main(data).unwrap();
+        info.parse_more(data_more);
     }
 
     /*

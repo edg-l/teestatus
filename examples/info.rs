@@ -1,9 +1,7 @@
 use std::borrow::Cow;
 use std::net::UdpSocket;
-use teestatus::*;
 use std::time::Duration;
-use std::cell::RefCell;
-use std::rc::Rc;
+use teestatus::*;
 
 fn main() {
     env_logger::init();
@@ -48,29 +46,41 @@ fn main() {
     servers.extend(&master1.get_server_list(&sock).unwrap());
     println!("Loaded {}", servers.len());
 
-    let mut server_infos: Vec<(ServerInfo, RefCell<Vec<Vec<u8>>>)> = vec![];
+    let mut server_info_buffers = Vec::with_capacity(servers.len());
+
+    for _ in 0..servers.len() {
+        server_info_buffers.push(ServerInfo::create_buffers());
+    }
+
+    let mut server_infos: Vec<ServerInfo> = vec![];
+
+    let mut buffer_iter = server_info_buffers.iter_mut();
 
     for (ip, port) in servers.iter() {
         let addr = format!("{}:{}", ip.to_string(), port);
-        sock.connect(addr.clone()).unwrap();
-        let mut buffers = RefCell::new(ServerInfo::create_buffers());
-        match ServerInfo::new(&sock, buffers.borrow_mut().as_mut()) {
-            Ok(info) => {
-                println!("Loaded server '{}'", info.name);
-                println!(
-                    "Server has {} connected players ({}/{})",
-                    info.players.len(),
-                    info.client_count,
-                    info.max_client_count
-                );
-                server_infos.push((info, buffers.clone()));
-            }
-            Err(e) => {
-                println!("Error loading server: {}", addr);
-                println!("Error: {:?}", e);
+        if let Ok(_) = sock.connect(addr.clone()) {
+            match ServerInfo::new(&sock, buffer_iter.next().unwrap()) {
+                Ok(info) => {
+                    println!("Loaded server '{}'", info.name);
+                    println!(
+                        "Server has {} connected players ({}/{})",
+                        info.players.len(),
+                        info.client_count,
+                        info.max_client_count
+                    );
+                    server_infos.push(info);
+                }
+                Err(e) => {
+                    println!("Error loading server: {}", addr);
+                    println!("Error: {:?}", e);
+                }
             }
         }
     }
 
-    println!("Loaded {} servers out of {}.", server_infos.len(), servers.len());
+    println!(
+        "Loaded {} servers out of {}.",
+        server_infos.len(),
+        servers.len()
+    );
 }
