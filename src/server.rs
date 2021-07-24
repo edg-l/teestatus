@@ -2,7 +2,7 @@ use log::debug;
 use nom::sequence::tuple;
 use nom::IResult;
 use nom::{
-    char, cond, dbg_dmp, do_parse, many_till, map_res, named, tag, take, take_str, take_until,
+    char, cond, do_parse, many_till, map_res, named, tag, take, take_str, take_until,
     terminated,
 };
 use std::net::UdpSocket;
@@ -17,7 +17,7 @@ pub struct Player<'a> {
     pub clan: &'a str,
     pub country: i32,
     pub score: i32,
-    pub is_player: bool,
+    pub is_spectator: bool,
     pub reserved: &'a str,
 }
 
@@ -42,43 +42,52 @@ pub struct ServerInfo<'a> {
 named!(padding, take!(10));
 named!(response_type<&str>, take_str!(4));
 
-named!(
-    next_data,
-    dbg_dmp!(terminated!(take_until!("\0"), char!('\0')))
-);
+named!(next_data, terminated!(take_until!("\0"), char!('\0')));
 
 named!(
     next_str<&str>,
-    dbg_dmp!(map_res!(next_data, |x| std::str::from_utf8(x)))
+    map_res!(next_data, |x| std::str::from_utf8(x))
 );
 
 named!(
     next_int<i32>,
-    dbg_dmp!(map_res!(next_str, |s: &str| s.parse::<i32>()))
+    map_res!(next_str, |s: &str| s.parse::<i32>())
 );
 
-#[rustfmt::skip]
-named!(server_info<(
-        i32, &str, &str, &str, 
-        Option<i32>, Option<i32>,
-        i32, i32, i32, i32, i32, &str)>,
+named!(
+    server_info<ServerInfo>,
     do_parse!(
-        padd: padding >>
-        resp_type: response_type >>
-        token: next_int >>
-        version: next_str >>
-        name: next_str >>
-        map: next_str >>
-        map_crc: cond!(resp_type == "iext", next_int) >>
-        map_size: cond!(resp_type == "iext", next_int) >>
-        game_type: next_str >>
-        flags: next_int >>
-        num_players: next_int >>
-        max_players: next_int >>
-        num_clients: next_int >>
-        max_clients: next_int >>
-        reserved: next_str >>
-        (token, version, name, map, map_crc, map_size, num_players, max_players, num_clients, max_clients, flags, game_type)
+        _padd: padding
+            >> resp_type: response_type
+            >> token: next_int
+            >> version: next_str
+            >> name: next_str
+            >> map: next_str
+            >> map_crc: cond!(resp_type == "iext", next_int)
+            >> map_size: cond!(resp_type == "iext", next_int)
+            >> game_type: next_str
+            >> flags: next_int
+            >> num_players: next_int
+            >> max_players: next_int
+            >> num_clients: next_int
+            >> max_clients: next_int
+            >> _reserved: next_str
+            >> (ServerInfo {
+                token,
+                version,
+                name,
+                map,
+                map_crc,
+                map_size,
+                player_count: num_players,
+                max_player_count: max_players,
+                client_count: num_clients,
+                max_client_count: max_clients,
+                password: (flags & 1) == 1,
+                game_type,
+                players: Vec::new(),
+                buffers: Vec::new()
+            })
     )
 );
 
@@ -94,7 +103,7 @@ fn get_player(i: &[u8]) -> IResult<&[u8], Player> {
             clan,
             country,
             score,
-            is_player: is_player == 1,
+            is_spectator: is_player != 1,
             reserved,
         },
     ))
@@ -103,24 +112,7 @@ fn get_player(i: &[u8]) -> IResult<&[u8], Player> {
 impl<'a> ServerInfo<'a> {
     /// Parses the main packet.
     fn parse_main(data: &'a [u8]) -> Result<ServerInfo<'a>> {
-        let (input, info) = server_info(data).unwrap();
-
-        let mut server_info = ServerInfo {
-            token: info.0,
-            version: info.1,
-            name: info.2,
-            map: info.3,
-            map_crc: info.4,
-            map_size: info.5,
-            player_count: info.6,
-            max_player_count: info.7,
-            client_count: info.8,
-            max_client_count: info.9,
-            password: (info.10 & 1) == 1,
-            game_type: info.11,
-            players: Vec::new(),
-            buffers: Vec::new(),
-        };
+        let (input, mut server_info) = server_info(data).unwrap();
 
         if server_info.client_count > 0 {
             let (_input, (ps, _)) = read_players(input).unwrap();
@@ -133,7 +125,7 @@ impl<'a> ServerInfo<'a> {
     /// Parses the more packet.
     fn parse_more(&mut self, data: &'a [u8]) {
         let (input, _) =
-            tuple((padding, response_type, next_int, next_int, next_str))(data.as_ref()).unwrap();
+            tuple((padding, response_type, next_int, next_int, next_str))(data).unwrap();
 
         let (_, (more_players, _)) = read_players(input).unwrap();
         self.players.extend(more_players);
@@ -157,11 +149,13 @@ impl<'a> ServerInfo<'a> {
     /// this function parses the data received doing zero copy into a [ServerInfo].
     ///
     /// See also [ServerInfo::create_buffers()]
-    pub fn new(sock: &UdpSocket, buffers: &'a mut Vec<Vec<u8>>) -> Result<ServerInfo<'a>> {
+    pub fn new(sock: &UdpSocket, buffers: &'a mut [Vec<u8>]) -> Result<ServerInfo<'a>> {
         let (buf, extra_token, token) = create_packet(PacketType::GetInfo, Some(b"xe"), true);
         let token = token.expect("token should always have value here.");
 
         log::debug!("generated extra_token={}, token={}", extra_token, token);
+
+        // TODO: Use a single buffer with split_mut_at and use the recv value.
 
         let sent = sock.send(&buf)?;
 
@@ -174,7 +168,7 @@ impl<'a> ServerInfo<'a> {
             );
         }
 
-        let ref mut iter = buffers.iter_mut();
+        let iter = &mut buffers.iter_mut();
 
         if let Some(data) = iter.next() {
             let res = sock.recv(data)?;
@@ -189,7 +183,7 @@ impl<'a> ServerInfo<'a> {
             );
 
             if info.players.len() < info.client_count as usize {
-                while let Some(more_data) = iter.next() {
+                for more_data in iter {
                     let res = sock.recv(more_data)?;
                     if res > 0 {
                         info.parse_more(more_data);
@@ -212,6 +206,7 @@ impl<'a> ServerInfo<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn it_works() {
@@ -219,6 +214,17 @@ mod tests {
         let data_more = include_bytes!("samples/server_info_more.data");
         let mut info = ServerInfo::parse_main(data).unwrap();
         info.parse_more(data_more);
+
+        assert_eq!(info.client_count, 63);
+        assert_eq!(info.game_type, "DDraceNetwork");
+        assert_eq!(info.max_player_count, 63);
+        assert_eq!(info.max_client_count, 63);
+        assert_eq!(info.map, "Multeasymap");
+        assert_eq!(info.players.len(), info.client_count as usize);
+        assert_eq!(
+            info.players.iter().filter(|x| !x.is_spectator).count(),
+            info.player_count as usize
+        );
     }
 
     /*

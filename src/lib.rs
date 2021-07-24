@@ -14,7 +14,8 @@
 //! let sock = UdpSocket::bind("0.0.0.0:0").expect("can't bind socket");
 //! sock.connect("0.0.0.0:8303")
 //!     .expect("can't connect socket");
-//! println!("info: {:#?}", ServerInfo::new(&sock).unwrap());
+//! let mut buffers = ServerInfo::create_buffers();
+//! println!("info: {:#?}", ServerInfo::new(&sock, &mut buffers).unwrap());
 //! ```
 //! Example to fetch servers from a master server:
 //! ```rust,no_run
